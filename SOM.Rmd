@@ -1,0 +1,296 @@
+---
+title: "SOM for MALDI-IMS"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library("kohonen")
+library("RColorBrewer")
+library("ggplot2")
+library("tempR")
+library("dplyr")
+library("factoextra")
+library("gridExtra")
+```
+
+```{r Load data, echo=FALSE}
+maldiDataLoaded <- read.csv("~/ssdhome/PythonProjects/maldi_ml/tumor_23_groups_export_for_SOM_normalized.csv", row.names = 1)
+```
+
+```{r Define SOM, echo=FALSE}
+runMALDIsomSC <- function(maldiDataLoaded, spotsPath = "~/ssdhome/maldi_data/tumor_spots/", 
+                        SOMGrid = c(3,1), kl = 3, mainTitle, SOM.on.original.data = FALSE, total.iter = 2000,
+                        completeMALDImap = "~/ssdhome/Full Map_spot.csv", savePath = "~"){
+  
+  yindex <- which(names(maldiDataLoaded) == "label")
+  X <- maldiDataLoaded[,-yindex]
+  y <- maldiDataLoaded[,yindex]
+  X.sc <- scale(X, center = T, scale = T)
+  
+  print('Prepared centered/scaled data. Starting SOM...')
+  if(SOM.on.original.data){message('\nSOM will be run on both original and cetered/scaled data.')}
+  
+  #somMaldi <- som(X = X.sc, grid = somgrid(30, 15, "hexagonal"))
+  message('Running SOM on centered, scaled data\n')
+  somMaldiScCenter <- supersom(data = X.sc, grid = somgrid(SOMGrid[1],SOMGrid[2], "hexagonal"), mode = "pbatch", rlen = total.iter, keep.data = TRUE)
+  
+  if(SOM.on.original.data){
+    message('Running SOM on original data\n')
+    somMaldiNonScaled <- supersom(data = as.matrix(X), grid = somgrid(SOMGrid[1],SOMGrid[2], "hexagonal"), mode = "pbatch")
+  }
+  
+  print('Running SOM done.')
+  
+  dfspot = list()
+  for(i in dir(spotsPath, full.names = T)){dfspot[[i]] <- read.csv(i, row.names = 1, sep = ";")}
+  dfspot = setNames(dfspot,NULL)
+  dfspots <- do.call("rbind", dfspot)
+  rownames(dfspots) <- paste0("Spot ", rownames(dfspots))
+  
+  n <- kl
+  qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+  col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+  #pie(rep(1,n), col=sample(col_vector, n))
+  #sampleCol = col_vector
+  
+  # if(n > 12) {sampleCol <- sample(col_vector, n)
+  # } else {sampleCol <- c("#E5D8BD", "#CCCCCC", "#66C2A5", "#B3DE69", "#F4CAE4", "#FFFFB3", 
+  #                        "#F2F2F2", "#FB9A99", "#FDC086", "#F0027F", "#B2DF8A", "#F781BF")}
+  
+  if(n > 7) {sampleCol <- sample(col_vector, n)
+  } else {sampleCol <- c("#C7B6C8", "#74B6BA", "#7783C4", "#B56D4E", "#F28E47", "#FCE269", "#FF0000")}
+  
+  
+  fullmap <- read.csv(completeMALDImap, sep=";", row.names = 1)
+  
+  savePath <- paste0(savePath, "/")
+  dir.create(savePath, recursive = T, showWarnings = F)
+  setwd(savePath)
+  
+  
+  
+  generateSOMplots <- function(somObject, mainTitle){
+    
+    somMaldi <- somObject
+    maldiData <- maldiDataLoaded
+    
+    # Visualising cluster results
+    #kl = 12
+    som_cluster <- cutree(hclust(dist(somMaldi$codes[[1]])), kl) ### use hierarchical clustering to cluster the codebook vectors
+    # plot these results:
+    clustKmeans <- kmeans(somMaldi$codes[[1]], kl)
+    
+    # get vector with cluster value for each original data sample
+    cluster_assignment <- som_cluster[somMaldi$unit.classif]
+    kmeansCluster_assignment <- clustKmeans$cluster[somMaldi$unit.classif]
+    # for each of analysis, add the assignment as a column in the original data:
+    maldiData$cluster <- cluster_assignment
+    maldiData$kmeansCluster <- kmeansCluster_assignment
+    
+    
+    #ggplot() + geom_point(data = fullmap, aes(x,y), size = 0.2, col='black') + 
+    #  geom_point(data = dfspots, mapping = aes(x, y), size = 0.2, col = colorsMaldi) + theme_void()
+    
+    finalDF <- merge(dfspots, maldiData, by=0)
+    
+    colorsMaldi = c()
+    for(icol in finalDF$cluster){
+      colorsMaldi = c(colorsMaldi, sampleCol[icol])
+    }
+    
+    kmeansColors = c()
+    for(icol in finalDF$kmeansCluster){
+      kmeansColors = c(kmeansColors, sampleCol[icol])
+    }
+    
+    
+    png(filename = paste0(mainTitle, "_SOM_hclust_Clusters_Grid_", paste(SOMGrid, collapse = "_"),".png"), width = 16, height = 9, units = "in", res = 600)
+    ptitle1 <- paste0("Features and SOM Clusters Mapping (based on hclust) (Grid size: (", SOMGrid[1], ",", SOMGrid[2], "))\n", mainTitle)
+    plot(somMaldi, type="mapping", bgcol = pretty_palette(kl)[som_cluster], main = ptitle1)
+    add.cluster.boundaries(somMaldi, som_cluster)
+    dev.off()
+    
+    png(filename = paste0(mainTitle, "_SOM_kmeans_Clusters_Grid_", paste(SOMGrid, collapse = "_"),".png"), width = 16, height = 9, units = "in", res = 600)
+    ptitle2 <- paste0("Features and SOM Clusters Mapping (based on kmeans) (Grid size: (", SOMGrid[1], ",", SOMGrid[2], "))\n", mainTitle)
+    plot(somMaldi, type="mapping", bgcol=pretty_palette(kl)[clustKmeans$cluster], main=ptitle2)
+    add.cluster.boundaries(somMaldi, clustKmeans$cluster)
+    dev.off()
+    
+    png(filename = paste0("+",mainTitle, "_SOM_kmeans_&_hclust_Clusters_Grid_", paste(SOMGrid, collapse = "_"),".png"), 
+        width = 16, height = 9, units = "in", res = 600)
+    par(mfrow=c(1,2))
+    plot(somMaldi, type="mapping", bgcol = pretty_palette(kl)[som_cluster], main = ptitle1)
+    add.cluster.boundaries(somMaldi, som_cluster)
+    plot(somMaldi, type="mapping", bgcol=pretty_palette(kl)[clustKmeans$cluster], main=ptitle2)
+    add.cluster.boundaries(somMaldi, clustKmeans$cluster)
+    dev.off()
+    
+    png(filename = paste0(mainTitle, "_SOM_Nodes_Count_Grid_", paste(SOMGrid, collapse = "_"),".png"), width = 16, height = 9, units = "in", res = 600)
+    ptitle <- paste0("SOM Node Counts Plot (Grid size: (", SOMGrid[1], ",", SOMGrid[2], "))\n", mainTitle)
+    plot(somMaldi, type="count", main=ptitle)
+    dev.off()
+    
+    png(filename = paste0(mainTitle, "_SOM_Codes_Plot_Grid_", paste(SOMGrid, collapse = "_"),".png"), width = 16, height = 9, units = "in", res = 600)
+    ptitle <- paste0("SOM Codes Plot (Grid size: (", SOMGrid[1], ",", SOMGrid[2], "))\n", mainTitle)
+    plot(somMaldi, type="codes", main = ptitle)
+    dev.off()
+    
+    #plot(somMaldi, type = "property", property = getCodes(somMaldi)[,150], 
+    #     main=colnames(getCodes(somMaldi))[150], palette.name=function(n, alpha = 1) {rainbow(n, end=4/6, alpha=alpha)[n:1]})
+    
+    p1 <- ggplot() + geom_point(data = fullmap, aes(x,y), size = 0.35, col='black', pch=15) + 
+      geom_point(data = finalDF, mapping = aes(x, y), size = 0.35, col = colorsMaldi, pch=15) + 
+      theme_void() + labs(title = mainTitle, subtitle = paste("Hierarchical Clustering (Complete) tree cut into", kl, "groups |",
+                                                              "(SOM Grid size: (", SOMGrid[1], ",", SOMGrid[2], "))\n"))
+    
+    p1kmeans <- ggplot() + geom_point(data = fullmap, aes(x,y), size = 0.35, col='black', pch=15) + 
+      geom_point(data = finalDF, mapping = aes(x, y), size = 0.35, col = kmeansColors, pch=15) + 
+      theme_void() + labs(title = mainTitle, subtitle = paste("kmeans with", kl, "clusters |",
+                                                              "(SOM Grid size: (", SOMGrid[1], ",", SOMGrid[2], "))\n"))
+    
+    # p2 <- ggplot() + geom_point(data = fullmap, aes(x,y), col='black', shape = ".") + 
+    #   geom_point(data = finalDF, mapping = aes(x, y), col = colorsMaldi, shape = ".") + 
+    #   theme_void() + theme_void() + labs(title = mainTitle, subtitle = paste("Hierarchical Clustering (Complete) tree cut into", kl, "groups"))
+    
+    ggsave(plot = p1, filename = paste0("___SOM_hclust_tissue_mapping_Grid_", paste(SOMGrid, collapse = "_"), mainTitle, ".png"), 
+           device = "png", width = 16, height = 7.65, units = "in", dpi = 600)
+    
+    ggsave(plot = p1kmeans, filename = paste0("___SOM_kmeans_tissue_mapping_Grid_", paste(SOMGrid, collapse = "_"), mainTitle, ".png"), 
+           device = "png", width = 16, height = 7.65, units = "in", dpi = 600)
+    #ggsave(plot = p2, filename = paste0("SOM_tissue_mapping_alt_Grid_", paste(SOMGrid, collapse = "_"), mainTitle, ".png"), device = "png", width = 16, height = 7.65, units = "in", dpi = 600)
+    
+    dir.create(paste0(savePath,"/hclust_Clusters_Individual_Mapping/"), recursive = T, showWarnings = F)
+    for(clusters in unique(finalDF$cluster)){
+      ptemp <- ggplot() + geom_point(data = fullmap, aes(x,y), col='black', shape = ".") +
+        geom_point(data = finalDF %>% dplyr::filter(cluster==clusters), mapping = aes(x, y),  col = 'red', shape = ".") + 
+        theme_void() + ggtitle( paste0(mainTitle, " (Cluster #", clusters, ")") )
+      
+      ggsave(plot = ptemp, 
+             filename = paste0("hclust_Clusters_Individual_Mapping/SOM_tissue_mapping_Grid_", 
+                               paste(SOMGrid, collapse = "_"), "_Cluster_", clusters, "_", mainTitle, ".png"), 
+             device = "png", width = 16, height = 7.65, units = "in", dpi = 600)
+    }
+    
+    dir.create(paste0(savePath,"/kmeans_Clusters_Individual_Mapping/"), recursive = T, showWarnings = F)
+    for(clusters in unique(finalDF$kmeansCluster)){
+      ptemp <- ggplot() + geom_point(data = fullmap, aes(x,y), col='black', shape = ".") +
+        geom_point(data = finalDF %>% dplyr::filter(kmeansCluster==clusters), mapping = aes(x, y),  col = 'red', shape = ".") + 
+        theme_void() + ggtitle( paste0(mainTitle, " (Cluster #", clusters, ")") )
+      
+      ggsave(plot = ptemp, 
+             filename = paste0("kmeans_Clusters_Individual_Mapping/SOM_tissue_mapping_Grid_", 
+                               paste(SOMGrid, collapse = "_"), "_Cluster_", clusters, "_", mainTitle, ".png"), 
+             device = "png", width = 16, height = 7.65, units = "in", dpi = 600)
+    }
+    
+    dir.create(paste0(savePath,"/Feature_Heatmaps/"), recursive = T, showWarnings = F)
+    
+    for(feature in 1:ncol(X)){
+      ggsave(plot = plot(somMaldi, type = "property", property = getCodes(somMaldi)[,feature], main = colnames(getCodes(somMaldi))[feature]), 
+             filename = paste0(savePath,"/Feature_Heatmaps/", mainTitle, "_",colnames(getCodes(somMaldi))[feature],".png"), 
+             device = "png", width = 6, height = 4, units = "in", dpi = 200)
+    }
+    
+    fviz_nbclust(somMaldi$codes[[1]], kmeans, method = "wss",        k.max = 25) + 
+      labs(title = "Optimal number of clusters for kmeans based on wss (total within sum of square)") -> p1
+    fviz_nbclust(somMaldi$codes[[1]], kmeans, method = "silhouette", k.max = 25) + 
+      labs(title = "Optimal number of clusters for kmeans based on average silhouette width") -> p2
+    fviz_nbclust(somMaldi$codes[[1]], hcut,   method = "wss",        k.max = 25) + 
+      labs(title = "Optimal number of clusters for hclust based on wss (total within sum of square)") -> p3
+    fviz_nbclust(somMaldi$codes[[1]], hcut,   method = "silhouette", k.max = 25) + 
+      labs(title = "Optimal number of clusters for hclust based on average silhouette width") -> p4
+    ggsave(plot = gridExtra::grid.arrange(p1,p2,p3,p4), 
+           filename = paste0(savePath, mainTitle, "_Optimal_Number_of_Clusters",".png"), device = "png", width = 16, height = 7.65, units = "in", dpi = 1000)
+  
+    
+    som.object.subset <- somMaldi
+    lowestMeans <- som.object.subset$codes[[1]][,head(names(sort(colMeans(som.object.subset$codes[[1]]))), n = 10)]
+    highestMeans <- som.object.subset$codes[[1]][,tail(names(sort(colMeans(som.object.subset$codes[[1]]))), n = 10)]
+    #som.object.subset$codes[[1]] <- som.object.subset$codes[[1]][,1:5]
+    som.object.subset$codes[[1]] <- lowestMeans
+    
+    ggsave(plot = plot(som.object.subset, shape = 'straight', type = 'codes', codeRendering = 'segments', 
+         main = "SOM Codes Plot, features with the 10 lowest codebook vector means (across all spots)"), 
+         filename = paste0(savePath, "/10_LOWEST_Codes_Plot_Grid_", paste(SOMGrid, collapse = "_"),".png"), 
+           device = "png", width = 16, height = 7.65, units = "in", dpi = 1000)
+    
+    
+    som.object.subset$codes[[1]] <- highestMeans
+    ggsave(plot = plot(som.object.subset, shape = 'straight', type = 'codes', codeRendering = 'segments',
+         main = "SOM Codes Plot, features with the 10 highest codebook vector means (across all spots)"), 
+         filename = paste0(savePath, "/10_HIGHEST_Codes_Plot_Grid_", paste(SOMGrid, collapse = "_"),".png"), 
+           device = "png", width = 16, height = 7.65, units = "in", dpi = 1000)
+    
+    
+    maldiData %>% select(label, kmeansCluster) %>% group_by(label, kmeansCluster) %>% summarize(n = n()) %>% 
+      ggplot(data = ., aes(x=label, y=n, fill=factor(kmeansCluster))) + 
+      geom_bar(stat="identity") + scale_fill_manual(values = sampleCol) + theme_bw() + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+      labs(title = "kmeans") -> kmeansratios
+    
+    maldiData %>% select(label, cluster) %>% group_by(label, cluster) %>% summarize(n = n()) %>% 
+      ggplot(data = ., aes(x=label, y=n, fill=factor(cluster))) + 
+      geom_bar(stat="identity") + scale_fill_manual(values = sampleCol) + theme_bw() + theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+      labs(title = "hclust") -> hclustratios
+    
+    ggplot() + annotation_custom(tableGrob(table(cluster_assignment) %>% as.data.frame())) -> hclust_table
+    ggplot() + annotation_custom(tableGrob(table(kmeansCluster_assignment) %>% as.data.frame())) -> kmeans_table
+    
+    
+    
+    
+    ggsave(plot = grid.arrange(hclustratios,hclust_table,nrow=1),
+           filename = paste0(savePath, "/hclust_assignment_per_sample", paste(SOMGrid, collapse = "_"),".png"), 
+           device = "png", width = 16, height = 7.65, units = "in", dpi = 1000)
+    
+    ggsave(plot = grid.arrange(kmeansratios,kmeans_table,nrow=1),
+           filename = paste0(savePath, "/kmeans_assignment_per_sample", paste(SOMGrid, collapse = "_"),".png"), 
+           device = "png", width = 16, height = 7.65, units = "in", dpi = 1000)
+    
+  }
+  
+  tibble(value = X.sc %>% Matrix::colMeans()) %>%
+    ggplot(aes(value)) +
+    geom_density(fill = 'grey', alpha = 0.8) +
+    scale_y_continuous(name = 'Density') + labs(title = "Mean intensity per metabolite in centered/scaled data") +
+    theme_bw() -> plotScaledCentered
+  
+  tibble(value = X %>% Matrix::colMeans()) %>%
+    ggplot(aes(value)) +
+    geom_density(fill = 'grey', alpha = 0.8) +
+    scale_y_continuous(name = 'Density') + labs(title = "Mean intensity per metabolite in original data") +
+    theme_bw() -> plotOriginalData
+  
+  ggsave(filename = paste0(savePath,'/mean_metabolite_intensities.png'), 
+         plot = gridExtra::grid.arrange(plotOriginalData,plotScaledCentered), height = 3, width = 7, dpi = 400)
+  generateSOMplots(somObject=somMaldiScCenter, mainTitle=paste(mainTitle, "(Centered and Scaled Data)"))
+  if(SOM.on.original.data){generateSOMplots(somObject=somMaldiNonScaled, mainTitle=paste(mainTitle, "(Original Data)"))}
+  if(SOM.on.original.data){
+    save(somMaldiScCenter, somMaldiNonScaled, file = paste0("SOM_Grid_", paste(SOMGrid, collapse = "_"), mainTitle, ".RData"))
+  } else {save(somMaldiScCenter, file = paste0("SOM_Grid_", paste(SOMGrid, collapse = "_"), mainTitle, ".RData"))}
+}
+```
+
+```{r Example}
+setwd("~/SOM_iter/")
+iterations = 10
+grids = list(c(23,25),
+             c(23,10),
+             c(23,30),
+             c(30,50),
+             c(100,46),
+             c(30,30),
+             c(35,36),
+             c(50,35),
+             c(230,25)
+             )
+for(GRID in 1:length(grids)){
+  print(paste('Current grid index:',GRID))
+  for(i in 1:iterations){
+    message(paste0('Iteration #',i))
+    runMALDIsomSC(maldiDataLoaded = maldiDataLoaded,
+                  SOMGrid = c(grids[[GRID]][1], grids[[GRID]][2]), kl = 7, total.iter = 200,
+                  mainTitle = "Tumor (RMS)", savePath = paste0("~/SOM_iter/Tumor_SOM_",paste0(c(grids[[GRID]][1], grids[[GRID]][2]),collapse = "x"),"kl7__iter_",i))
+  }
+  
+}
+```
